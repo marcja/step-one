@@ -1,0 +1,28 @@
+[package]
+name = "step_one"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+standalone = ["nih_plug/standalone"]
+
+[[bin]]
+name = "step_one_standalone"
+path = "src/main.rs"
+required-features = ["standalone"]
+
+[dependencies]
+# NOTE: default-features = false drops VST3 (GPL compatibility).
+# Only CLAP is exported via nih_export_clap! in lib.rs.
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", default-features = false, features = ["assert_process_allocs"] }
+
+[dev-dependencies]
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "seq_bench"
+harness = false
