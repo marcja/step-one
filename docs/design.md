@@ -33,7 +33,8 @@ Both components are designed for future extension (noted in Open Questions).
 | Audio I/O layouts | Empty — no audio processing |
 | MIDI input | MidiConfig::Basic — NoteOn, NoteOff, PolyPressure, PolyPan |
 | MIDI output | MidiConfig::Basic — NoteOn, NoteOff, PolyPan |
-| CLAP features | CLAP_FEATURE_NOTE_EFFECT |
+| CLAP features | ClapFeature::Custom("note-effect") |
+| Sample-accurate automation | true |
 | GUI | None — generic host parameter list |
 | Transport | Required — beat position, tempo, playing state |
 
@@ -276,10 +277,10 @@ Because gate length ranges from 0% to 400%, output notes can overlap — a gate'
 arrive well after the next gate fires. StepOne must track multiple pending NoteOffs
 simultaneously.
 
-**Maximum overlap:** At 400% gate length, each note lasts 4× the step duration. If every step is
-a pulse, at most 4 notes are sounding at any given time (the 4 most recently fired gates). A
-fixed-size pending list of at least 4 entries is sufficient. Use a conservative bound (e.g., 8)
-for safety.
+**Maximum overlap:** At 400% gate length, each note lasts 4× the distance to the next active
+pulse. If every step is a pulse (distance = 1 step), at most 4 notes are sounding at any given
+time (the 4 most recently fired gates). A fixed-size pending list of at least 4 entries is
+sufficient. Use a conservative bound (e.g., 8) for safety.
 
 **NoteOff scheduling:**
 
@@ -292,7 +293,7 @@ gate_length_beats = (gate_length_pct / 100.0) × distance_beats
 off_at_beat       = B + gate_length_beats
 ```
 
-Add a pending NoteOff entry with (note, channel, off_at_beat). On each process() call, scan the
+Add a pending NoteOff entry with (note, channel, voice_id, off_at_beat). On each process() call, scan the
 pending list for any entries whose off_at_beat falls within [buffer_start, buffer_end) and emit
 NoteOff at the computed sample offset.
 
@@ -304,14 +305,14 @@ instrument from seeing two NoteOns for the same pitch without an intervening Not
 **NoteOff at gate_length = 0%:** When gate length is 0%, no NoteOn is emitted — effectively a
 mute. This provides a clean way to silence the arp output without changing the pattern.
 
-**NoteOff at gate_length = 100%:** The NoteOff coincides exactly with the next step boundary. If
-the next step is also a pulse, the NoteOff fires at that boundary, immediately followed by the
-next NoteOn. Output is legato.
+**NoteOff at gate_length = 100%:** The NoteOff coincides exactly with the next active pulse. If
+the next step is also a pulse (distance = 1 step), the NoteOff fires at that boundary,
+immediately followed by the next NoteOn. Output is legato.
 
-**NoteOff at gate_length > 100%:** The NoteOff extends past the next step boundary. Multiple
-output notes overlap. At 200%, each note lasts 2 steps; at 400%, 4 steps. The downstream
-instrument receives polyphonic overlapping NoteOn/NoteOff pairs, producing chordal or sustain
-effects from a single arp voice.
+**NoteOff at gate_length > 100%:** The NoteOff extends past the next active pulse. Multiple
+output notes overlap. At 200%, each note lasts 2× the distance to the next pulse; at 400%, 4×.
+The downstream instrument receives polyphonic overlapping NoteOn/NoteOff pairs, producing chordal
+or sustain effects from a single arp voice.
 
 **Flush on transport stop or jump:** All pending NoteOffs are emitted immediately at sample 0.
 
@@ -325,18 +326,20 @@ The process() function follows this sequence on each call:
    pattern.
 2. **Drain all input MIDI events** — NoteOn, NoteOff, PolyPressure, PolyPan — updating the held
    note list and expression stashes. Do NOT forward any input events to output.
-3. **Check transport.** If not playing, flush all pending NoteOffs at sample 0 and return
-   KeepAlive. If transport jumped, flush all pending NoteOffs at sample 0 before continuing.
+3. **Read transport.** If pos_beats or tempo is None, return KeepAlive immediately (no gates, no
+   NoteOffs). If not playing, flush all pending NoteOffs at sample 0 and return KeepAlive. If
+   transport jumped (current pos_beats deviates from expected by more than 0.001 beats), flush
+   all pending NoteOffs at sample 0 before continuing.
 4. **Compute the beat range** for this buffer from pos_beats, tempo, and sample_rate.
-5. **Scan the beat range** for pending NoteOff deadlines and step boundaries, processing them in
-   chronological order by beat position:
-   - For each pending NoteOff whose off_at_beat falls in [buffer_start, buffer_end): emit NoteOff
-     at the computed sample offset and remove the entry.
-   - For each step boundary in [buffer_start, buffer_end): if the pattern is active at that step
-     and gate_length > 0 and the held note list is non-empty: first emit any pending NoteOff for
-     the same pitch (same-pitch retrigger), then emit NoteOn + PolyPan and add a new pending
-     NoteOff entry. Advance the arp index.
-6. **Return KeepAlive** (not Normal) — the plugin needs continuous process() calls to detect step
+5. **Emit due NoteOffs.** Collect all pending NoteOff entries whose off_at_beat falls in
+   [buffer_start, buffer_end). Emit each as a NoteOff at the computed sample offset. This is a
+   separate pass — all due NoteOffs are emitted before any new gates.
+6. **Fire gates at step boundaries.** For each step boundary in [buffer_start, buffer_end): if
+   the pattern is active at that step and gate_length > 0 and the held note list is non-empty:
+   first emit any pending NoteOff for the same pitch (same-pitch retrigger), then emit NoteOn +
+   PolyPan and add a new pending NoteOff entry. Advance the arp index.
+7. **Update prev_end_beat** for transport jump detection on the next buffer.
+8. **Return KeepAlive** (not Normal) — the plugin needs continuous process() calls to detect step
    boundaries even when no input events are pending.
 
 **Why drain all input events first?** Input MIDI events and step boundaries are on different
@@ -355,7 +358,7 @@ arpeggiators, and keeps the code simple. Noted as an Open Question for potential
 | Steps | "steps" | IntParam | 1–32 | 8 | None | steps | Euclidean pattern length |
 | Pulses | "pulses" | IntParam | 0–32 | 4 | None | pulses | Active gates; clamped ≤ steps at read time |
 | Step Duration | "step_dur" | IntParam | 1–16 | 1 | None | 16ths | Sixteenth notes per step |
-| Gate Length | "gate_len" | FloatParam | 0.0–400.0 | 100.0 | None | % | Gate duration as % of step duration |
+| Gate Length | "gate_len" | FloatParam | 0.0–400.0 | 100.0 | None | % | Gate duration as % of distance to next active pulse |
 | Velocity | "velocity" | FloatParam | 0.0–100.0 | 100.0 | None | % | Scales input note velocity |
 
 **Notes on parameter choices:**
@@ -365,8 +368,8 @@ arpeggiators, and keeps the code simple. Noted as an Open Question for potential
   This avoids invalid Euclidean patterns without complex parameter interdependencies.
 - **Gate Length** ranges from 0% to 400% (matching Bitwig's built-in arpeggiator). At 0%, no
   NoteOn is emitted (mute). At 100% (default), notes are legato — each NoteOff coincides with
-  the next step boundary. Above 100%, notes overlap, producing polyphonic output. At 400%, each
-  note lasts 4× the step duration.
+  the next active pulse. Above 100%, notes overlap, producing polyphonic output. At 400%, each
+  note lasts 4× the distance to the next active pulse.
 - **Velocity** scales the output velocity in combination with the note's stored pressure:
   output_velocity = input_velocity × pressure × (velocity_pct / 100.0). Pressure is updated live
   by PolyPressure events, so the same held note can produce different output velocities on
@@ -386,11 +389,12 @@ parameter values against cached copies at the top of each process() call.
 
 All plugin state is captured by the five Params fields — no custom serialization needed.
 
-Sequencer state (held note list, arp index, pending NoteOffs, cached pattern, expression stashes)
-is **not** persisted. On reload, the held note list is empty, the arp index is 0, pending NoteOffs
-are cleared, both expression stashes are cleared, and the pattern is recomputed from the current
-parameter values. This is correct behavior — the arp starts fresh and waits for the player to
-hold notes.
+Sequencer state (held note list, arp index, pending NoteOffs, cached pattern, expression stashes,
+transport jump detection state) is **not** persisted. On `reset()`, the held note list is cleared
+(including both expression stashes), pending NoteOffs are cleared, the pattern is reset to empty
+with cached param values set to -1 (forcing recompute on the next `process()` call), and
+`prev_end_beat` is cleared (disabling transport jump detection for the first buffer after reset).
+This is correct behavior — the arp starts fresh and waits for the player to hold notes.
 
 ---
 
@@ -419,7 +423,8 @@ step-one/
         │   ├── mod.rs
         │   ├── euclidean.rs    # Bjorklund algorithm + pattern storage
         │   ├── held_notes.rs   # Sorted held note list with arp index
-        │   └── clock.rs        # Transport-synced step boundary detection
+        │   ├── clock.rs        # Transport-synced step boundary detection
+        │   └── pending.rs      # Pending NoteOff scheduling and management
         └── main.rs         # standalone binary
 ```
 
@@ -493,36 +498,49 @@ offsets are within [0, buffer_size).
 
 ### Layer 3 — Integration tests (plugin lifecycle)
 
-These exercise the full plugin lifecycle (initialize → reset → process) using mock contexts,
-without a real DAW or audio driver.
+These exercise the full plugin lifecycle (initialize → reset → process) using mock contexts
+(MockInitContext, MockProcessContext) inline in `plugin.rs`'s `#[cfg(test)]` module, without a
+real DAW or audio driver.
+
+**Implemented:**
 
 - Plugin can be constructed; params() returns valid Arc
 - initialize() stores sample rate
 - reset() clears held notes, all pending NoteOffs, and both expression stashes
+- reset() forces pattern recompute (cached_steps/cached_pulses set to -1)
 - No output events when transport is stopped
 - No output events when no notes are held (even with active pattern)
-- Single held note produces repeated NoteOn for that note across multiple gates
-- Two held notes (C4, E4) with E(2,2) produce alternating C4, E4, C4, E4
-- NoteOff fires at correct beat offset for 50% gate length (halfway through step)
-- E(0, N) produces no gates regardless of held notes
-- Transport restart from beat 0 restarts pattern from step 0
-- All pending NoteOffs sent on transport stop
-- At 100% gate length with consecutive pulses: NoteOff(old) precedes NoteOn(new) at same sample
+- Single held note produces NoteOn with correct velocity
+- Two held notes (C4, E4) with E(8,8) produce alternating C4, E4
+- Arp cycles C4→E4→G4 across multiple buffers
+- NoteOff fires at correct beat offset for 50% gate length
+- Non-uniform gate distances: E(3,8) pulses at 0,3,6 produce different gate durations
 - Gate length 0% produces no NoteOn events
-- Velocity param at 50% halves output velocity relative to input
+- All pending NoteOffs sent on transport stop
+- Transport jump flushes pending NoteOffs
+- Missing pos_beats returns KeepAlive with no output
+- Missing tempo returns KeepAlive with no output
 - Pressure modulates velocity: PolyPressure(0.5) → output is input_vel × 0.5 × vel_scale
 - Pressure stash: PolyPressure then NoteOn in same buffer → stashed pressure applied
-- Pressure resets to 1.0 on re-add (not old value)
 - Stashed pressure cleared by reset()
 - Pan forwarded on gate: PolyPan(-0.5) → output includes PolyPan(-0.5) at same timing as NoteOn
-- Pan defaults to center: no PolyPan input → output includes PolyPan(0.0)
 - Pan stash: PolyPan then NoteOn in same buffer → stashed pan applied
-- Pan resets to 0.0 on re-add
-- Stashed pan cleared by reset()
-- **Gate length > 100% produces overlapping notes:** with gate_length = 200% and E(4,4)
-  duration=1, two output notes overlap at any given time
+- Input NoteOn via MIDI event produces output (input drain path)
+- Input NoteOff stops arp output
+- Velocity clipping at max (pressure > 1.0 clipped to output 1.0)
+- Inactive step skipped: E(1,8) fires only at step 0
+- **Gate length > 100% produces overlapping notes:** with gate_length = 200% and E(8,8)
+  duration=1, two output notes overlap (NoteOffs remain pending beyond buffer)
 - **Same-pitch retrigger sends NoteOff before NoteOn:** single held note, all pulses,
-  gate_length = 200% → when arp re-triggers the same pitch, NoteOff(old) precedes NoteOn(new)
+  gate_length = default → NoteOff(old) precedes NoteOn(new) at same sample
+
+**Not yet implemented** (covered by unit tests or deferred):
+
+- E(0, N) produces no gates regardless of held notes
+- Transport restart from beat 0 restarts pattern from step 0
+- At 100% gate length with consecutive pulses: NoteOff(old) precedes NoteOn(new) at same sample
+- Pan defaults to center: no PolyPan input → output includes PolyPan(0.0)
+- Velocity param at 50% halves output velocity in isolation (tested in combination only)
 
 ### Layer 4 — CLAP compliance (clap-validator)
 
@@ -534,12 +552,18 @@ save/load, threading invariants, fuzz pass, descriptor validity.
 StepOne's process loop is lightweight — no audio DSP. The primary concern is that step boundary
 detection and note event emission are fast enough to never be a bottleneck.
 
-**Component benchmarks:** Bjorklund recompute at worst case (E(16, 32)); held note list churn
-(100 on/off operations); step boundary detection in a 512-sample buffer at 120 BPM.
+**Component benchmarks:** Bjorklund recompute at worst case (E(16, 32)) and typical (E(4, 8));
+held note list churn (100 on/off operations) and arp cycling (100 cycles through 8 notes); step
+boundary detection in a 512-sample buffer at 120 BPM and 2048-sample buffer at 300 BPM; pending
+NoteOff add/take_due (8 entries) and retrigger path (take_by_note for 8 entries).
 
-**Process benchmarks:** Full process() call at typical (8 steps, 4 pulses, 3 held notes, 512
-samples, 120 BPM) and worst case (32 steps, 32 pulses, 400% gate length). All benchmarks report
-throughput in samples/second.
+**Pipeline benchmarks:** Sequencer hot path (pending collection, boundary scan, gate emission,
+NoteOff scheduling) at typical (8 steps, 4 pulses, 3 held notes, 512 samples, 120 BPM) and worst
+case (32 steps, 32 pulses, 8 held notes, 2048 samples, 300 BPM).
+
+**Realtime deadline benchmark:** Worst-case pipeline measured against the 512-sample audio
+deadline (~11.6 ms at 44100 Hz) with a 3-second measurement window for stable percentile
+estimates.
 
 ### Realtime Safety Checklist
 
