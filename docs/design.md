@@ -385,6 +385,8 @@ hold notes.
 
 ```
 step-one/
+├── .cargo/
+│   └── config.toml         # alias: xtask = "run --package xtask --"
 ├── Cargo.toml              # workspace manifest
 ├── Cargo.lock
 ├── bundler.toml            # [step_one] name = "StepOne"
@@ -394,6 +396,8 @@ step-one/
 │       └── main.rs         # "deploy" subcommand + nih_plug_xtask delegation
 └── step_one/
     ├── Cargo.toml
+    ├── benches/
+    │   └── seq_bench.rs    # criterion benchmarks (Bjorklund, held notes, process)
     └── src/
         ├── lib.rs          # nih_export_clap! macro
         ├── plugin.rs       # StepOne struct + Plugin trait impl
