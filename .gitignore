@@ -54,6 +54,9 @@ fuzz/coverage/
 /criterion/
 **/criterion/
 
+# Code coverage reports (cargo-llvm-cov --html)
+/coverage/
+
 
 # -----------------------------------------------------------------------------
 # cargo tools

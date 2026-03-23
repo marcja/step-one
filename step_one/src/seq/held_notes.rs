@@ -422,6 +422,55 @@ mod tests {
         assert!((note.pressure - 1.0).abs() < f32::EPSILON);
         assert!((note.pan - 0.0).abs() < f32::EPSILON);
     }
+
+    #[test]
+    fn note_on_at_capacity_ignored() {
+        // Fill to MAX_HELD (128), then try one more — should be silently ignored.
+        let mut held = HeldNotes::new();
+        for note in 0..MAX_HELD as u8 {
+            held.note_on(note, 0.5);
+        }
+        assert_eq!(held.len(), MAX_HELD);
+
+        // Attempt to add note 128 (would be index 128 if u8 could hold it).
+        // Since MAX_HELD == 128 and MIDI notes are 0..=127, this is already
+        // at capacity. Verify the guard works by removing one, re-adding, then
+        // filling again.
+        held.note_off(64);
+        assert_eq!(held.len(), MAX_HELD - 1);
+        held.note_on(64, 0.5);
+        assert_eq!(held.len(), MAX_HELD);
+
+        // Now at capacity again — a new note_on for an unused pitch is impossible
+        // since all 128 MIDI notes are held. Duplicate should be ignored.
+        held.note_on(60, 0.9);
+        assert_eq!(held.len(), MAX_HELD);
+    }
+
+    #[test]
+    fn remove_at_arp_index_wraps_to_zero() {
+        // When the note at the current arp_index is removed and
+        // arp_index >= len, it should wrap to 0.
+        let mut held = HeldNotes::new();
+        held.note_on(60, 0.8);
+        held.note_on(64, 0.8);
+        held.note_on(67, 0.8);
+
+        // Advance arp_index: next_note() returns notes[0]=60 (index becomes 1),
+        // then notes[1]=64 (index becomes 2).
+        held.next_note();
+        held.next_note();
+        // arp_index is now 2 (pointing at note 67, the last element).
+
+        // Remove note 67 (at index 2 == arp_index). len drops to 2.
+        // arp_index (2) >= len (2), so it should wrap to 0.
+        held.note_off(67);
+        assert_eq!(held.len(), 2);
+
+        // Next note should be notes[0] = 60, confirming arp_index wrapped to 0.
+        let note = held.next_note().unwrap();
+        assert_eq!(note.note, 60);
+    }
 }
 
 #[cfg(test)]

@@ -340,6 +340,25 @@ mod tests {
     }
 
     #[test]
+    fn e_7_8_leftover_front_groups() {
+        // E(7,8) — 7 pulses, 1 rest. Initial Bjorklund: front=7, rem=1.
+        // pairs=1, leftover_front=6 — exercises the "leftover front groups"
+        // branch in interleave_pass (lines 205–211).
+        assert_eq!(
+            compute(8, 7),
+            vec![true, false, true, true, true, true, true, true]
+        );
+    }
+
+    #[test]
+    fn e_1_5_leftover_remainder_groups() {
+        // E(1,5) — 1 pulse, 4 rests. Initial: front=1, rem=4.
+        // pairs=1, leftover_rem=3 — exercises the "leftover remainder groups"
+        // branch in interleave_pass (lines 213–218).
+        assert_eq!(compute(5, 1), vec![true, false, false, false, false]);
+    }
+
+    #[test]
     fn no_true_beyond_steps() {
         // After computing E(3,8), indices 8..32 must all be false.
         let mut pat = EuclideanPattern::new();

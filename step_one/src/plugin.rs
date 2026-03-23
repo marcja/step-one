@@ -1017,6 +1017,106 @@ mod tests {
         );
     }
 
+    /// Helper: call Plugin::process() directly (not process_sequencer) to test
+    /// the transport-guard branches in process(). Returns (ProcessStatus, sent events).
+    fn run_process(plugin: &mut StepOne, context: &mut MockProcessContext) -> ProcessStatus {
+        let mut buffer = Buffer::default();
+        let mut aux = AuxiliaryBuffers {
+            inputs: &mut [],
+            outputs: &mut [],
+        };
+        plugin.process(&mut buffer, &mut aux, context)
+    }
+
+    #[test]
+    fn missing_pos_beats_returns_keepalive() {
+        let mut plugin = init_plugin(44100.0);
+        plugin.held_notes.note_on(60, 0.8);
+
+        // Zeroed transport: pos_beats() returns None (no pos_beats, pos_seconds,
+        // or pos_samples set). process() should return KeepAlive immediately.
+        let mut context = MockProcessContext::new(44100.0, vec![]);
+        let status = run_process(&mut plugin, &mut context);
+
+        assert_eq!(status, ProcessStatus::KeepAlive);
+        assert!(
+            context.sent_events.is_empty(),
+            "no events should be emitted when pos_beats is None"
+        );
+    }
+
+    #[test]
+    fn missing_tempo_returns_keepalive() {
+        let mut plugin = init_plugin(44100.0);
+        plugin.held_notes.note_on(60, 0.8);
+
+        // Set tempo=None but leave pos_beats derivable from pos_samples+tempo.
+        // Since tempo is None, pos_beats() also returns None (all fallback paths
+        // require tempo). So this test actually hits the pos_beats None branch too.
+        // To specifically test the tempo=None branch at line 117, we would need
+        // pos_beats to be Some — but that field is pub(crate).
+        // This still exercises the early-return path with tempo=None.
+        let mut context = MockProcessContext::new(44100.0, vec![]).with_transport(true, None);
+        let status = run_process(&mut plugin, &mut context);
+
+        assert_eq!(status, ProcessStatus::KeepAlive);
+        assert!(
+            context.sent_events.is_empty(),
+            "no events should be emitted when tempo is None"
+        );
+    }
+
+    #[test]
+    fn velocity_clipping_at_max() {
+        // Velocity 100%, pressure 1.0, input velocity 1.0 → product = 1.0 (no clip).
+        // But if we manually set pressure > 1.0 (via the expression stash, which
+        // doesn't clamp), the product exceeds 1.0 and must be clipped.
+        // Actually, PolyPressure values from MIDI are 0.0–1.0, but the stash
+        // stores whatever f32 is passed. Let's use velocity_scale > 1.0 instead:
+        // There's no param value >100%, but we can test via a known combination.
+        //
+        // Alternative: input_velocity=1.0, pressure=1.0, velocity_param=100%.
+        // Product = 1.0 × 1.0 × 1.0 = 1.0 — exactly at the boundary.
+        // We need product > 1.0. Since velocity param max is 100%, we'd need
+        // pressure > 1.0 or input_velocity > 1.0.
+        //
+        // pressure is stored as f32 from PolyPressure which can be any value.
+        // Let's set pressure = 1.5 directly.
+        let mut plugin = init_plugin(44100.0);
+        plugin.held_notes.note_on(60, 1.0);
+        plugin.held_notes.set_pressure(60, 1.5);
+
+        // output_velocity = 1.0 × 1.5 × 1.0 = 1.5 → clipped to 1.0.
+        let events = run_sequencer(&mut plugin, 0.0, 120.0, true, 512, vec![]);
+
+        let (_, velocity) = expect_note_on(&events);
+        assert!(
+            (velocity - 1.0).abs() < f32::EPSILON,
+            "expected velocity clipped to 1.0, got {velocity}"
+        );
+    }
+
+    #[test]
+    fn inactive_step_skipped() {
+        // E(1,8): only step 0 is active. Use a large buffer that covers steps 0 and 1.
+        // Only step 0 should produce a NoteOn.
+        let mut plugin = init_plugin_with(StepOneParams::with_pulses(1), 44100.0);
+        plugin.held_notes.note_on(60, 0.8);
+
+        // At 120 BPM with step_duration=1 (0.25 beats), boundaries at 0.0, 0.25.
+        // 0.25 beats = 5512.5 samples. Use 8192 samples to cover both.
+        let events = run_sequencer(&mut plugin, 0.0, 120.0, true, 8192, vec![]);
+
+        let note_ons = note_on_notes(&events);
+        assert_eq!(
+            note_ons.len(),
+            1,
+            "only step 0 is active in E(1,8); expected 1 NoteOn, got {}: {:?}",
+            note_ons.len(),
+            note_ons
+        );
+    }
+
     #[test]
     fn overlapping_noteoffs_with_long_gate() {
         // All-pulse pattern + 200% gate length → NoteOffs extend past next step.
