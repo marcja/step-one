@@ -46,6 +46,34 @@ impl EuclideanPattern {
         self.pattern[step_index]
     }
 
+    /// Return the number of steps from `step_index` to the next active pulse,
+    /// scanning forward and wrapping around the pattern.
+    ///
+    /// If `step_index` is the only pulse, the distance is `self.steps` (full wrap).
+    /// If there are no pulses, returns `self.steps` as a safe fallback (caller
+    /// should not call this when pulses == 0, since no gates fire).
+    ///
+    /// Caller must ensure `step_index < self.steps` and `self.steps > 0`.
+    pub fn distance_to_next_pulse(&self, step_index: usize) -> usize {
+        debug_assert!(
+            self.steps > 0,
+            "distance_to_next_pulse called with steps == 0"
+        );
+        debug_assert!(
+            step_index < self.steps,
+            "step_index {step_index} >= steps {}",
+            self.steps
+        );
+        for offset in 1..self.steps {
+            let candidate = (step_index + offset) % self.steps;
+            if self.pattern[candidate] {
+                return offset;
+            }
+        }
+        // Only pulse in the pattern, or no pulses — full wrap.
+        self.steps
+    }
+
     /// Recompute the pattern using the Bjorklund algorithm.
     ///
     /// `pulses` is clamped to `min(pulses, steps)`. Entries at indices
@@ -264,6 +292,48 @@ mod tests {
     }
 
     #[test]
+    fn distance_e3_8_from_step_0() {
+        // E(3,8) = [X..X..X.] — from step 0, next pulse at step 3, distance = 3.
+        let mut pat = EuclideanPattern::new();
+        pat.recompute(8, 3);
+        assert_eq!(pat.distance_to_next_pulse(0), 3);
+    }
+
+    #[test]
+    fn distance_e3_8_from_step_3() {
+        // E(3,8) = [X..X..X.] — pulses at 0,3,6. From step 3, next at 6, distance = 3.
+        let mut pat = EuclideanPattern::new();
+        pat.recompute(8, 3);
+        assert_eq!(pat.distance_to_next_pulse(3), 3);
+    }
+
+    #[test]
+    fn distance_e3_8_from_step_6() {
+        // E(3,8) = [X..X..X.] — pulses at 0,3,6. From step 6, next at 0 (wraps), distance = 2.
+        let mut pat = EuclideanPattern::new();
+        pat.recompute(8, 3);
+        assert_eq!(pat.distance_to_next_pulse(6), 2);
+    }
+
+    #[test]
+    fn distance_all_pulses() {
+        // E(8,8) — every step active, distance from any step = 1.
+        let mut pat = EuclideanPattern::new();
+        pat.recompute(8, 8);
+        for step in 0..8 {
+            assert_eq!(pat.distance_to_next_pulse(step), 1, "step {step}");
+        }
+    }
+
+    #[test]
+    fn distance_single_pulse() {
+        // E(1,8) — one pulse at step 0, distance = 8 (full wrap).
+        let mut pat = EuclideanPattern::new();
+        pat.recompute(8, 1);
+        assert_eq!(pat.distance_to_next_pulse(0), 8);
+    }
+
+    #[test]
     fn pulses_clamped() {
         // E(10,4) should behave as E(4,4) — pulses clamped to steps.
         assert_eq!(compute(4, 10), vec![true; 4]);
@@ -305,6 +375,38 @@ mod proptests {
             for index in steps..MAX_STEPS {
                 prop_assert!(!pat.pattern[index],
                     "E({},{}) unexpected true at index {}", pulses, steps, index);
+            }
+        }
+
+        /// Sum of distance_to_next_pulse over all active steps must equal total steps.
+        #[test]
+        fn distance_sum_equals_steps(steps in 1_usize..=MAX_STEPS, pulses in 1_usize..=MAX_STEPS) {
+            let mut pat = EuclideanPattern::new();
+            pat.recompute(steps, pulses);
+
+            let sum: usize = (0..steps)
+                .filter(|&i| pat.is_active(i))
+                .map(|i| pat.distance_to_next_pulse(i))
+                .sum();
+
+            prop_assert_eq!(sum, steps,
+                "E({},{}) distance sum {} != steps {}", pulses, steps, sum, steps);
+        }
+
+        /// distance_to_next_pulse lands on an active step.
+        #[test]
+        fn distance_lands_on_active(steps in 1_usize..=MAX_STEPS, pulses in 1_usize..=MAX_STEPS) {
+            let mut pat = EuclideanPattern::new();
+            pat.recompute(steps, pulses);
+
+            for i in 0..steps {
+                if pat.is_active(i) {
+                    let dist = pat.distance_to_next_pulse(i);
+                    let target = (i + dist) % steps;
+                    prop_assert!(pat.is_active(target),
+                        "E({},{}) step {} + dist {} = {} is not active",
+                        pulses, steps, i, dist, target);
+                }
             }
         }
     }
