@@ -242,7 +242,7 @@ mod tests {
         // Steps at 0.0, 0.25, 0.5, ... — only beat 0.0 is < 0.04645
         // So we expect exactly 1 boundary.
         assert!(
-            result.len() >= 1,
+            !result.is_empty(),
             "expected at least 1 boundary at fast tempo, got {}",
             result.len()
         );

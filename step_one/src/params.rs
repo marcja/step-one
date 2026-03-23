@@ -103,39 +103,28 @@ impl StepOneParams {
 
 #[cfg(test)]
 impl StepOneParams {
-    /// Create params with a custom steps default for testing.
-    pub fn with_steps(n: i32) -> Self {
-        let mut params = Self::default();
-        params.steps = Self::build_steps(n);
-        params
-    }
-
     /// Create params with a custom pulses default for testing.
     pub fn with_pulses(n: i32) -> Self {
-        let mut params = Self::default();
-        params.pulses = Self::build_pulses(n);
-        params
-    }
-
-    /// Create params with a custom step_duration default for testing.
-    pub fn with_step_duration(n: i32) -> Self {
-        let mut params = Self::default();
-        params.step_duration = Self::build_step_duration(n);
-        params
+        Self {
+            pulses: Self::build_pulses(n),
+            ..Self::default()
+        }
     }
 
     /// Create params with a custom gate_length default for testing.
     pub fn with_gate_length(pct: f32) -> Self {
-        let mut params = Self::default();
-        params.gate_length = Self::build_gate_length(pct);
-        params
+        Self {
+            gate_length: Self::build_gate_length(pct),
+            ..Self::default()
+        }
     }
 
     /// Create params with a custom velocity default for testing.
     pub fn with_velocity(pct: f32) -> Self {
-        let mut params = Self::default();
-        params.velocity = Self::build_velocity(pct);
-        params
+        Self {
+            velocity: Self::build_velocity(pct),
+            ..Self::default()
+        }
     }
 
     /// Chain: override gate_length on an existing params instance.
