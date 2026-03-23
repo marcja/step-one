@@ -23,8 +23,9 @@ pub struct StepOneParams {
     #[id = "step_dur"]
     pub step_duration: IntParam,
 
-    /// Gate duration as percentage of step duration (0–400%).
-    /// 0% = mute, 100% = legato, >100% = overlapping notes.
+    /// Gate duration as percentage of distance to next active pulse (0–400%).
+    /// 0% = mute, 100% = sustain until next pulse fires (true legato),
+    /// >100% = overlapping notes.
     #[id = "gate_len"]
     pub gate_length: FloatParam,
 

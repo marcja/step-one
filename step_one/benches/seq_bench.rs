@@ -62,9 +62,11 @@ fn run_pipeline(
         if pattern.is_active(boundary.step_index) {
             let note = held.next_note().unwrap();
             black_box(pending.take_by_note(note.note));
+            // Gate length relative to distance to next pulse (matches plugin emit_gates).
+            let distance = pattern.distance_to_next_pulse(boundary.step_index);
             pending.add(make_pending(
                 note.note,
-                boundary.beat_position + step_length_beats,
+                boundary.beat_position + distance as f64 * step_length_beats,
             ));
         }
     }

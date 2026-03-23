@@ -99,15 +99,26 @@ needed.
 **Gate timing within a step:**
 
 A gate fires at the beginning of a step where the pattern is active. The gate's NoteOn is emitted
-at the exact sample where the step boundary falls. The corresponding NoteOff is scheduled at:
+at the exact sample where the step boundary falls. The corresponding NoteOff is scheduled
+relative to the **distance to the next active pulse**, not the fixed step duration:
 
 ```
-gate_length_beats = (gate_length_pct / 100.0) × (duration / 4.0)
+distance_steps    = steps_to_next_active_pulse(current_step)
+distance_beats    = distance_steps × (duration / 4.0)
+gate_length_beats = (gate_length_pct / 100.0) × distance_beats
 off_at_beat       = gate_on_beat + gate_length_beats
 ```
 
-Since gate length ranges from 0% to 400%, a single gate can extend up to 4× the step duration,
-producing overlapping notes (see Pending NoteOff Management).
+For example, E(3,8) = `[X..X..X.]` with pulses at steps 0, 3, 6 and duration = 1 sixteenth:
+
+| Pulse at step | Next pulse | Distance (steps) | Distance (beats) | 100% gate |
+|---------------|-----------|-----------------|-----------------|-----------|
+| 0             | 3         | 3               | 0.75            | 0.75      |
+| 3             | 6         | 3               | 0.75            | 0.75      |
+| 6             | 0 (wraps) | 2               | 0.50            | 0.50      |
+
+At 100% gate length, each note sustains until the next pulse fires (true legato). At >100%,
+gates overlap producing layered notes (see Pending NoteOff Management).
 
 ### Component 2: Held Notes (Up Arpeggiator)
 
@@ -275,7 +286,9 @@ for safety.
 When a gate fires a NoteOn at beat position B:
 
 ```
-gate_length_beats = (gate_length_pct / 100.0) × (duration / 4.0)
+distance_steps    = steps_to_next_active_pulse(current_step)
+distance_beats    = distance_steps × (duration / 4.0)
+gate_length_beats = (gate_length_pct / 100.0) × distance_beats
 off_at_beat       = B + gate_length_beats
 ```
 

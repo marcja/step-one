@@ -310,9 +310,10 @@ impl StepOne {
             });
 
             // Schedule pending NoteOff.
-            // gate_length_beats = (gate_length_pct / 100.0) × (step_duration / 4.0)
-            let step_length_beats = step_duration as f64 / 4.0;
-            let gate_length_beats = (gate_length_pct / 100.0) * step_length_beats;
+            // Gate length is a percentage of the distance (in beats) to the next active pulse.
+            let distance_steps = self.pattern.distance_to_next_pulse(boundary.step_index);
+            let distance_beats = distance_steps as f64 * step_duration as f64 / 4.0;
+            let gate_length_beats = (gate_length_pct / 100.0) * distance_beats;
             let off_at_beat = boundary.beat_position + gate_length_beats;
 
             self.pending_offs.add(PendingNoteOff {
@@ -746,25 +747,68 @@ mod tests {
 
     #[test]
     fn noteoff_at_correct_time() {
-        // gate_length=50% of step_duration=1 sixteenth (0.25 beats) = 0.125 beats.
-        // NoteOffs scheduled in the current buffer are emitted in the next buffer
-        // (due NoteOff scan runs before gate emission). Use small buffers so the
-        // NoteOff falls in a subsequent buffer's range.
+        // Default E(8,4) = [X.X.X.X.], distance to next pulse = 2 steps.
+        // gate_length=50% of distance (2 × 0.25 beats) = 0.25 beats.
+        // NoteOn at beat 0.0 → NoteOff at beat 0.25.
         let mut plugin = init_plugin_with(StepOneParams::with_gate_length(50.0), 44100.0);
         plugin.held_notes.note_on(60, 0.8);
 
-        // Buffer 1 (512 samples ≈ 0.023 beats): fires gate at 0.0, schedules off at 0.125.
+        // Buffer 1 (512 samples ≈ 0.023 beats): fires gate at 0.0, schedules off at 0.25.
         let _ = run_sequencer(&mut plugin, 0.0, 120.0, true, 512, vec![]);
         assert!(!plugin.pending_offs.is_empty(), "NoteOff should be pending");
 
-        // Buffer 2 at beat 0.12 (covers [0.12, 0.143)): NoteOff at 0.125 IS due.
-        let events = run_sequencer(&mut plugin, 0.12, 120.0, true, 512, vec![]);
+        // Buffer 2 at beat 0.24 (covers [0.24, 0.263)): NoteOff at 0.25 IS due.
+        let events = run_sequencer(&mut plugin, 0.24, 120.0, true, 512, vec![]);
 
         assert!(
             events
                 .iter()
                 .any(|e| matches!(e, NoteEvent::NoteOff { .. })),
             "NoteOff should be emitted when its beat falls in the buffer range"
+        );
+    }
+
+    #[test]
+    fn nonuniform_gate_distances() {
+        // E(8,3) = [X..X..X.] — pulses at 0, 3, 6 with distances 3, 3, 2.
+        // gate_length=100%, step_duration=1 sixteenth.
+        // Pulse at step 0: off_at = 0.0 + 3×0.25 = 0.75 beats.
+        // Pulse at step 6: off_at = 6×0.25 + 2×0.25 = 1.5 + 0.5 = 2.0 beats.
+        // The two NoteOff positions differ, proving per-pulse distance is used.
+        let params = StepOneParams::with_pulses(3);
+        let mut plugin = init_plugin_with(params, 44100.0);
+        plugin.held_notes.note_on(60, 0.8);
+
+        // Fire gate at step 0 (distance=3, off_at=0.75).
+        let _ = run_sequencer(&mut plugin, 0.0, 120.0, true, 512, vec![]);
+        // NoteOff for step 0 should be at beat 0.75 (distance=3, 100% gate).
+        assert!(!plugin.pending_offs.is_empty(), "should have pending off");
+
+        // Advance past the NoteOff at 0.75 to collect it, then fire step 3.
+        // Buffer at beat 0.74, 512 samples ≈ 0.023 beats → covers [0.74, 0.763).
+        let events = run_sequencer(&mut plugin, 0.74, 120.0, true, 512, vec![]);
+        let off_count = events
+            .iter()
+            .filter(|e| matches!(e, NoteEvent::NoteOff { .. }))
+            .count();
+        assert!(
+            off_count > 0,
+            "NoteOff at beat 0.75 should fire in [0.74, 0.763)"
+        );
+
+        // Now fire step 6 at beat 1.5 (global step index 6, distance=2).
+        let _ = run_sequencer(&mut plugin, 1.5, 120.0, true, 512, vec![]);
+        // NoteOff should be at 1.5 + 2×0.25 = 2.0 beats (distance=2).
+        // Verify it's NOT at 1.5 + 3×0.25 = 2.25 (which old fixed-step would give for step_duration).
+        // Buffer at beat 1.99, covers [1.99, 2.013) — should contain NoteOff at 2.0.
+        let events = run_sequencer(&mut plugin, 1.99, 120.0, true, 512, vec![]);
+        let off_count = events
+            .iter()
+            .filter(|e| matches!(e, NoteEvent::NoteOff { .. }))
+            .count();
+        assert!(
+            off_count > 0,
+            "NoteOff at beat 2.0 (distance=2) should fire in [1.99, 2.013)"
         );
     }
 
@@ -983,7 +1027,8 @@ mod tests {
         plugin.held_notes.note_on(60, 0.8); // C4
         plugin.held_notes.note_on(64, 0.8); // E4
 
-        // gate_length=200% of step_duration=1 sixteenth (0.25 beats) = 0.5 beats.
+        // E(8,8) all-pulse: distance to next pulse = 1 step = 0.25 beats.
+        // gate_length=200% of distance (0.25 beats) = 0.5 beats.
         // NoteOn at beat 0.0 → NoteOff at beat 0.5.
         // NoteOn at beat 0.25 → NoteOff at beat 0.75.
         // Use 8192 samples (≈0.372 beats) to get two step boundaries.
