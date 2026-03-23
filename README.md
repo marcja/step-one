@@ -11,7 +11,7 @@ StepOne receives MIDI notes, generates a rhythmic gate pattern using the Euclide
 | Steps | 1–32 | 8 | Total slots in the Euclidean pattern |
 | Pulses | 0–32 | 4 | Active gates distributed across steps |
 | Step Duration | 1–16 | 1 | Length of each step in sixteenth notes |
-| Gate Length | 0–400% | 100% | Gate duration relative to step duration |
+| Gate Length | 0–400% | 100% | Gate duration relative to distance to next active pulse |
 | Velocity | 0–100% | 100% | Scales output velocity |
 
 Gate lengths above 100% produce overlapping (polyphonic) output. At 100%, output is legato. Below 100%, output is staccato. At 0%, output is muted.
@@ -52,7 +52,7 @@ cargo bench         # criterion benchmarks
 
 ## Design
 
-See [design.md](design.md) for the full technical design document.
+See [docs/design.md](docs/design.md) for the full technical design document.
 
 ## License
 
