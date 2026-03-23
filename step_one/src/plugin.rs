@@ -447,6 +447,17 @@ mod tests {
         initialize_plugin(StepOne::default(), sample_rate)
     }
 
+    /// Helper: construct a plugin with custom params and call initialize().
+    fn init_plugin_with(params: StepOneParams, sample_rate: f32) -> StepOne {
+        initialize_plugin(
+            StepOne {
+                params: Arc::new(params),
+                ..StepOne::default()
+            },
+            sample_rate,
+        )
+    }
+
     #[test]
     fn plugin_can_be_constructed() {
         let plugin = StepOne::default();
@@ -526,6 +537,39 @@ mod tests {
         context.sent_events
     }
 
+    /// Extract note numbers from all NoteOn events.
+    fn note_on_notes(events: &[NoteEvent<()>]) -> Vec<u8> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                NoteEvent::NoteOn { note, .. } => Some(*note),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Find the first NoteOn and return (note, velocity), or panic.
+    fn expect_note_on(events: &[NoteEvent<()>]) -> (u8, f32) {
+        events
+            .iter()
+            .find_map(|e| match e {
+                NoteEvent::NoteOn { note, velocity, .. } => Some((*note, *velocity)),
+                _ => None,
+            })
+            .expect("expected at least one NoteOn")
+    }
+
+    /// Find the first PolyPan and return (note, pan), or panic.
+    fn expect_poly_pan(events: &[NoteEvent<()>]) -> (u8, f32) {
+        events
+            .iter()
+            .find_map(|e| match e {
+                NoteEvent::PolyPan { note, pan, .. } => Some((*note, *pan)),
+                _ => None,
+            })
+            .expect("expected at least one PolyPan")
+    }
+
     #[test]
     fn reset_forces_pattern_recompute() {
         let mut plugin = init_plugin(44100.0);
@@ -580,17 +624,8 @@ mod tests {
         // Default pattern E(4,8) has step 0 active.
         let events = run_sequencer(&mut plugin, 0.0, 120.0, true, 512, vec![]);
 
-        let note_ons: Vec<_> = events
-            .iter()
-            .filter(|e| matches!(e, NoteEvent::NoteOn { .. }))
-            .collect();
-        assert!(
-            !note_ons.is_empty(),
-            "should emit at least one NoteOn for held note"
-        );
-        if let NoteEvent::NoteOn { note, .. } = note_ons[0] {
-            assert_eq!(*note, 60);
-        }
+        let (note, _) = expect_note_on(&events);
+        assert_eq!(note, 60);
     }
 
     #[test]
@@ -602,17 +637,11 @@ mod tests {
         // output_velocity = 0.8 × 1.0 × 1.0 = 0.8
         let events = run_sequencer(&mut plugin, 0.0, 120.0, true, 512, vec![]);
 
-        let note_on = events
-            .iter()
-            .find(|e| matches!(e, NoteEvent::NoteOn { .. }));
-        if let Some(NoteEvent::NoteOn { velocity, .. }) = note_on {
-            assert!(
-                (*velocity - 0.8).abs() < 1e-6,
-                "expected velocity 0.8, got {velocity}"
-            );
-        } else {
-            panic!("no NoteOn found");
-        }
+        let (_, velocity) = expect_note_on(&events);
+        assert!(
+            (velocity - 0.8).abs() < 1e-6,
+            "expected velocity 0.8, got {velocity}"
+        );
     }
 
     #[test]
@@ -631,16 +660,7 @@ mod tests {
         // Use 16384 samples to cover ~0.743 beats → boundaries at 0.0, 0.25, 0.5.
         let events = run_sequencer(&mut plugin, 0.0, 120.0, true, 16384, vec![]);
 
-        let note_ons: Vec<u8> = events
-            .iter()
-            .filter_map(|e| {
-                if let NoteEvent::NoteOn { note, .. } = e {
-                    Some(*note)
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let note_ons = note_on_notes(&events);
         assert!(
             note_ons.len() >= 2,
             "expected at least 2 NoteOns, got {}",
@@ -652,21 +672,13 @@ mod tests {
 
     #[test]
     fn gate_length_zero_mutes() {
-        let mut plugin = StepOne {
-            params: Arc::new(StepOneParams::with_gate_length(0.0)),
-            ..StepOne::default()
-        };
-        plugin = initialize_plugin(plugin, 44100.0);
+        let mut plugin = init_plugin_with(StepOneParams::with_gate_length(0.0), 44100.0);
         plugin.held_notes.note_on(60, 0.8);
 
         let events = run_sequencer(&mut plugin, 0.0, 120.0, true, 512, vec![]);
 
-        let note_ons: Vec<_> = events
-            .iter()
-            .filter(|e| matches!(e, NoteEvent::NoteOn { .. }))
-            .collect();
         assert!(
-            note_ons.is_empty(),
+            note_on_notes(&events).is_empty(),
             "gate_length=0 should produce no NoteOns"
         );
     }
@@ -679,15 +691,9 @@ mod tests {
 
         let events = run_sequencer(&mut plugin, 0.0, 120.0, true, 512, vec![]);
 
-        let poly_pans: Vec<_> = events
-            .iter()
-            .filter(|e| matches!(e, NoteEvent::PolyPan { .. }))
-            .collect();
-        assert!(!poly_pans.is_empty(), "should emit PolyPan with NoteOn");
-        if let NoteEvent::PolyPan { note, pan, .. } = poly_pans[0] {
-            assert_eq!(*note, 60);
-            assert!((*pan - (-0.5)).abs() < f32::EPSILON);
-        }
+        let (note, pan) = expect_poly_pan(&events);
+        assert_eq!(note, 60);
+        assert!((pan - (-0.5)).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -740,63 +746,270 @@ mod tests {
 
     #[test]
     fn noteoff_at_correct_time() {
-        let mut plugin = StepOne {
-            params: Arc::new(StepOneParams::with_gate_length(50.0)),
-            ..StepOne::default()
-        };
-        plugin = initialize_plugin(plugin, 44100.0);
-        plugin.held_notes.note_on(60, 0.8);
-
-        // gate_length = 50% of step_duration(1 sixteenth = 0.25 beats) = 0.125 beats.
-        // At 120 BPM: beats_per_sample = 120/(60*44100) ≈ 0.0000454.
-        // NoteOn fires at beat 0.0. NoteOff scheduled at beat 0.125.
-        // 0.125 beats ≈ 2756 samples. Use 4096 samples to cover [0.0, 0.186).
-        // The NoteOff at 0.125 should appear as a due NoteOff within this buffer.
-        //
-        // However, due NoteOffs are checked BEFORE step boundaries fire in the
-        // same buffer. Since the NoteOff is scheduled by this buffer's gate,
-        // it won't be emitted until the next buffer.
-        //
-        // Buffer 1: fires NoteOn at beat 0.0, schedules NoteOff at 0.125.
-        let _ = run_sequencer(&mut plugin, 0.0, 120.0, true, 4096, vec![]);
-        assert!(!plugin.pending_offs.is_empty(), "NoteOff should be pending");
-
-        // Buffer 2: starts at ~0.186 beats. NoteOff at 0.125 is before this buffer.
-        // Actually wait — take_due checks [start, end). The NoteOff at 0.125 < 0.186,
-        // so it's BEFORE the second buffer and won't be emitted.
-        // We need the second buffer to START before 0.125.
-        // Buffer 1 ends at: 4096 * 0.0000454 ≈ 0.186. NoteOff at 0.125 < 0.186,
-        // so it's IN buffer 1's range. But it was scheduled DURING buffer 1's
-        // processing, after the due-NoteOff scan already ran.
-        //
-        // This is a design issue: NoteOffs scheduled in the current buffer
-        // that fall within the same buffer won't be emitted until next time.
-        // The simplest test: use a buffer that's too short to contain the NoteOff,
-        // then a second buffer that does.
-
-        // Reset and use small buffers.
-        let mut plugin = StepOne {
-            params: Arc::new(StepOneParams::with_gate_length(50.0)),
-            ..StepOne::default()
-        };
-        plugin = initialize_plugin(plugin, 44100.0);
+        // gate_length=50% of step_duration=1 sixteenth (0.25 beats) = 0.125 beats.
+        // NoteOffs scheduled in the current buffer are emitted in the next buffer
+        // (due NoteOff scan runs before gate emission). Use small buffers so the
+        // NoteOff falls in a subsequent buffer's range.
+        let mut plugin = init_plugin_with(StepOneParams::with_gate_length(50.0), 44100.0);
         plugin.held_notes.note_on(60, 0.8);
 
         // Buffer 1 (512 samples ≈ 0.023 beats): fires gate at 0.0, schedules off at 0.125.
         let _ = run_sequencer(&mut plugin, 0.0, 120.0, true, 512, vec![]);
         assert!(!plugin.pending_offs.is_empty(), "NoteOff should be pending");
 
-        // Buffer 2 starting at beat 0.1 (covers [0.1, 0.123)): NoteOff at 0.125 not yet.
-        // Buffer 3 starting at beat 0.12 (covers [0.12, 0.143)): NoteOff at 0.125 IS due.
+        // Buffer 2 at beat 0.12 (covers [0.12, 0.143)): NoteOff at 0.125 IS due.
         let events = run_sequencer(&mut plugin, 0.12, 120.0, true, 512, vec![]);
 
-        let note_offs: Vec<_> = events
-            .iter()
-            .filter(|e| matches!(e, NoteEvent::NoteOff { .. }))
-            .collect();
         assert!(
-            !note_offs.is_empty(),
+            events
+                .iter()
+                .any(|e| matches!(e, NoteEvent::NoteOff { .. })),
             "NoteOff should be emitted when its beat falls in the buffer range"
         );
+    }
+
+    // ---- lifecycle tests ----
+
+    #[test]
+    fn input_noteon_produces_output() {
+        let mut plugin = init_plugin(44100.0);
+
+        // Feed NoteOn as an input event (not pre-loaded on held_notes).
+        let events = run_sequencer(
+            &mut plugin,
+            0.0,
+            120.0,
+            true,
+            512,
+            vec![NoteEvent::NoteOn {
+                timing: 0,
+                voice_id: None,
+                channel: 0,
+                note: 60,
+                velocity: 0.8,
+            }],
+        );
+
+        let (note, _) = expect_note_on(&events);
+        assert_eq!(note, 60);
+    }
+
+    #[test]
+    fn input_noteoff_stops_output() {
+        let mut plugin = init_plugin(44100.0);
+        plugin.held_notes.note_on(60, 0.8);
+
+        // Buffer 1: playing, fires a gate.
+        let _ = run_sequencer(&mut plugin, 0.0, 120.0, true, 512, vec![]);
+
+        // Buffer 2: send NoteOff as input event.
+        let _ = run_sequencer(
+            &mut plugin,
+            0.25,
+            120.0,
+            true,
+            512,
+            vec![NoteEvent::NoteOff {
+                timing: 0,
+                voice_id: None,
+                channel: 0,
+                note: 60,
+                velocity: 0.0,
+            }],
+        );
+
+        // Buffer 3: no notes held — should produce no NoteOns.
+        let events = run_sequencer(&mut plugin, 0.5, 120.0, true, 512, vec![]);
+        assert!(
+            note_on_notes(&events).is_empty(),
+            "no NoteOn after all notes released via input NoteOff"
+        );
+    }
+
+    #[test]
+    fn expression_stash_pressure_affects_velocity() {
+        let mut plugin = init_plugin(44100.0);
+
+        // Bitwig may send PolyPressure before NoteOn in the same buffer.
+        // Stashed pressure should be applied when NoteOn arrives.
+        // Expected output velocity: 0.8 × 0.5 × 1.0 (velocity_param=100%) = 0.4.
+        let events = run_sequencer(
+            &mut plugin,
+            0.0,
+            120.0,
+            true,
+            512,
+            vec![
+                NoteEvent::PolyPressure {
+                    timing: 0,
+                    voice_id: None,
+                    channel: 0,
+                    note: 60,
+                    pressure: 0.5,
+                },
+                NoteEvent::NoteOn {
+                    timing: 0,
+                    voice_id: None,
+                    channel: 0,
+                    note: 60,
+                    velocity: 0.8,
+                },
+            ],
+        );
+
+        let (_, velocity) = expect_note_on(&events);
+        assert!(
+            (velocity - 0.4).abs() < 1e-6,
+            "expected velocity 0.4 (0.8 × 0.5), got {velocity}"
+        );
+    }
+
+    #[test]
+    fn expression_stash_pan_via_input() {
+        let mut plugin = init_plugin(44100.0);
+
+        // PolyPan before NoteOn — stashed pan should appear in output PolyPan.
+        let events = run_sequencer(
+            &mut plugin,
+            0.0,
+            120.0,
+            true,
+            512,
+            vec![
+                NoteEvent::PolyPan {
+                    timing: 0,
+                    voice_id: None,
+                    channel: 0,
+                    note: 60,
+                    pan: -0.7,
+                },
+                NoteEvent::NoteOn {
+                    timing: 0,
+                    voice_id: None,
+                    channel: 0,
+                    note: 60,
+                    velocity: 0.8,
+                },
+            ],
+        );
+
+        let (note, pan) = expect_poly_pan(&events);
+        assert_eq!(note, 60);
+        assert!(
+            (pan - (-0.7)).abs() < f32::EPSILON,
+            "expected pan -0.7, got {pan}"
+        );
+    }
+
+    #[test]
+    fn same_pitch_retrigger_emits_noteoff_before_noteon() {
+        let mut plugin = init_plugin_with(StepOneParams::with_pulses(8), 44100.0);
+        plugin.held_notes.note_on(60, 0.8);
+
+        // Buffer covering 2 step boundaries (0.0 and 0.25).
+        // At 120 BPM, 0.25 beats ≈ 5513 samples. Use 8192 samples.
+        let events = run_sequencer(&mut plugin, 0.0, 120.0, true, 8192, vec![]);
+
+        // Filter to NoteOn/NoteOff for note 60 only, then verify ordering:
+        // expect [NoteOn, NoteOff, NoteOn] — NoteOff before second NoteOn.
+        let note_60_events: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                NoteEvent::NoteOn { note: 60, .. } => Some("on"),
+                NoteEvent::NoteOff { note: 60, .. } => Some("off"),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            note_60_events.len() >= 3,
+            "expected [on, off, on], got {note_60_events:?}"
+        );
+        assert_eq!(
+            &note_60_events[..3],
+            &["on", "off", "on"],
+            "same-pitch retrigger must emit NoteOff before second NoteOn"
+        );
+    }
+
+    #[test]
+    fn arp_cycles_across_buffers() {
+        let mut plugin = init_plugin_with(StepOneParams::with_pulses(8), 44100.0);
+        plugin.held_notes.note_on(60, 0.8); // C4
+        plugin.held_notes.note_on(64, 0.8); // E4
+        plugin.held_notes.note_on(67, 0.8); // G4
+
+        // 3 separate buffers, each containing exactly one step boundary.
+        // Step duration=1 (0.25 beats). Each buffer is 512 samples ≈ 0.023 beats.
+        // Place each buffer to start exactly at a step boundary.
+        let mut notes_emitted = Vec::new();
+
+        for &start_beat in &[0.0, 0.25, 0.5] {
+            let events = run_sequencer(&mut plugin, start_beat, 120.0, true, 512, vec![]);
+            notes_emitted.extend(note_on_notes(&events));
+        }
+
+        assert_eq!(
+            notes_emitted,
+            vec![60, 64, 67],
+            "arp should cycle C4→E4→G4 across buffers"
+        );
+    }
+
+    #[test]
+    fn pressure_modulates_output_velocity() {
+        let mut plugin = init_plugin_with(StepOneParams::with_velocity(50.0), 44100.0);
+        plugin.held_notes.note_on(60, 0.8);
+        plugin.held_notes.set_pressure(60, 0.5);
+
+        // output_velocity = input_velocity × pressure × (velocity_param / 100)
+        //                  = 0.8 × 0.5 × 0.5 = 0.2
+        let events = run_sequencer(&mut plugin, 0.0, 120.0, true, 512, vec![]);
+
+        let (_, velocity) = expect_note_on(&events);
+        assert!(
+            (velocity - 0.2).abs() < 1e-6,
+            "expected velocity 0.2 (0.8 × 0.5 × 0.5), got {velocity}"
+        );
+    }
+
+    #[test]
+    fn overlapping_noteoffs_with_long_gate() {
+        // All-pulse pattern + 200% gate length → NoteOffs extend past next step.
+        let mut plugin = init_plugin_with(
+            StepOneParams::with_pulses(8).and_gate_length(200.0),
+            44100.0,
+        );
+        plugin.held_notes.note_on(60, 0.8); // C4
+        plugin.held_notes.note_on(64, 0.8); // E4
+
+        // gate_length=200% of step_duration=1 sixteenth (0.25 beats) = 0.5 beats.
+        // NoteOn at beat 0.0 → NoteOff at beat 0.5.
+        // NoteOn at beat 0.25 → NoteOff at beat 0.75.
+        // Use 8192 samples (≈0.372 beats) to get two step boundaries.
+        let events = run_sequencer(&mut plugin, 0.0, 120.0, true, 8192, vec![]);
+
+        // With 8192 samples ≈ 0.372 beats, boundaries at 0.0 and 0.25.
+        // Both NoteOns fire. NoteOff for C4 at 0.5, NoteOff for E4 at 0.75.
+        // Both are beyond the buffer range, so they remain pending.
+        let note_ons = note_on_notes(&events);
+        assert!(
+            note_ons.len() >= 2,
+            "expected 2 NoteOns with long gate, got {}",
+            note_ons.len()
+        );
+
+        // No NoteOff should have been emitted yet — both are beyond the buffer.
+        let note_off_count = events
+            .iter()
+            .filter(|e| matches!(e, NoteEvent::NoteOff { .. }))
+            .count();
+        assert_eq!(
+            note_off_count, 0,
+            "NoteOffs should still be pending with 200% gate"
+        );
+
+        // Both NoteOffs should be pending.
+        assert!(!plugin.pending_offs.is_empty());
     }
 }

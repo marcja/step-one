@@ -137,6 +137,12 @@ impl StepOneParams {
         params.velocity = Self::build_velocity(pct);
         params
     }
+
+    /// Chain: override gate_length on an existing params instance.
+    pub fn and_gate_length(mut self, pct: f32) -> Self {
+        self.gate_length = Self::build_gate_length(pct);
+        self
+    }
 }
 
 #[cfg(test)]
