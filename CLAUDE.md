@@ -16,6 +16,10 @@ StepOne has **no audio processing** — no oscillators, no filters, no DSP. It r
 generates a rhythmic gate pattern from the Euclidean (Bjorklund) algorithm, and emits new MIDI
 notes synced to the host transport. The sequencer logic lives in `src/seq/`, not `src/dsp/`.
 
+The sibling project `sine-one` (added as an additional working directory) is the synthesizer twin
+of this MIDI-effect plugin. Consult its source — especially `src/dsp/`, `src/plugin.rs`, and
+`src/params.rs` — for proven nih-plug patterns, expression handling, and code style examples.
+
 The full technical design (algorithm, parameter rationale, transport sync, pending NoteOff
 management, expression stash, open questions) is in `docs/design.md`. Read it before touching
 sequencer or parameter code.
@@ -34,13 +38,13 @@ git clone --depth 1 https://github.com/robbert-vdh/nih-plug.git /tmp/nih-plug
 
 Key files:
 
-| File | What to look up |
-|---|---|
-| `src/midi.rs` | NoteEvent variants — verify PolyPressure and PolyPan field names |
-| `src/context.rs` or `src/context/` | ProcessContext trait, send_event(), transport() |
-| `src/context/transport.rs` | Transport struct — playing, pos_beats, tempo |
-| `src/plugin.rs` | Plugin trait, ProcessStatus variants, MIDI_OUTPUT, AUDIO_IO_LAYOUTS |
-| `plugins/` | Example plugins — especially `midi_inverter` for MIDI-only patterns |
+| File                               | What to look up                                                     |
+| ---------------------------------- | ------------------------------------------------------------------- |
+| `src/midi.rs`                      | NoteEvent variants — verify PolyPressure and PolyPan field names    |
+| `src/context.rs` or `src/context/` | ProcessContext trait, send_event(), transport()                     |
+| `src/context/transport.rs`         | Transport struct — playing, pos_beats, tempo                        |
+| `src/plugin.rs`                    | Plugin trait, ProcessStatus variants, MIDI_OUTPUT, AUDIO_IO_LAYOUTS |
+| `plugins/`                         | Example plugins — especially `midi_inverter` for MIDI-only patterns |
 
 Always verify API details against the clone before writing code that depends on nih-plug types.
 
@@ -66,7 +70,7 @@ Every unit of work follows this exact sequence. Do not skip or reorder steps.
    All three must be clean. Fix any issues before proceeding.
 
 4. RESOLVE REVIEWS
-   Run any applicable review commands (e.g., /simplify, /review).
+   Run /rust-reviewer first, then /simplify.
    Apply all suggestions or document explicitly why a suggestion was declined (as a comment).
    Re-run checks after applying changes.
 
@@ -75,11 +79,6 @@ Every unit of work follows this exact sequence. Do not skip or reorder steps.
    Each commit must be small, concrete, and — whenever possible — deliver something
    externally visible (a test that proves a behavior, a parameter the host can see,
    MIDI output that can be verified in Bitwig's MIDI monitor).
-
-6. ANALYZE AND PROPOSE CLAUDE.md CHANGES
-   After committing, review the conversation that led to this commit.
-   If any corrections, clarifications, or better patterns emerged, propose a concrete
-   diff to this file (CLAUDE.md) and ask the user to confirm before applying.
 ```
 
 ---
@@ -99,18 +98,18 @@ Next: One sentence. What is the logical next commit after this one?
 
 ### Scope tokens
 
-| Scope | Use for |
-|---|---|
+| Scope           | Use for                                                       |
+| --------------- | ------------------------------------------------------------- |
 | `seq/euclidean` | `src/seq/euclidean.rs` — Bjorklund algorithm, pattern storage |
-| `seq/held` | `src/seq/held_notes.rs` — sorted held note list, arp index |
-| `seq/clock` | `src/seq/clock.rs` — transport-synced step boundary detection |
-| `params` | `src/params.rs` |
-| `plugin` | `src/plugin.rs` (Plugin trait impl, process loop) |
-| `lib` | `src/lib.rs` (exports, top-level wiring) |
-| `build` | `Cargo.toml`, `xtask/`, `bundler.toml` |
-| `tests` | `tests/` integration test files |
-| `bench` | `benches/` |
-| `docs` | `README.md`, `docs/`, `CLAUDE.md` |
+| `seq/held`      | `src/seq/held_notes.rs` — sorted held note list, arp index    |
+| `seq/clock`     | `src/seq/clock.rs` — transport-synced step boundary detection |
+| `params`        | `src/params.rs`                                               |
+| `plugin`        | `src/plugin.rs` (Plugin trait impl, process loop)             |
+| `lib`           | `src/lib.rs` (exports, top-level wiring)                      |
+| `build`         | `Cargo.toml`, `xtask/`, `bundler.toml`                        |
+| `tests`         | `tests/` integration test files                               |
+| `bench`         | `benches/`                                                    |
+| `docs`          | `README.md`, `docs/`, `CLAUDE.md`                             |
 
 ### Verb vocabulary
 
@@ -157,16 +156,20 @@ Next: [build] configure xtask bundle and deploy so the plugin can be loaded in B
 
 ## Commit granularity rules
 
-Prefer commits that are **one thing**. Use these as guides:
+Each commit delivers **one logical feature** — a behavior the user can test or observe.
+Use these as guides:
 
-- One sequencer struct per commit (EuclideanPattern is one commit, HeldNotes is another)
-- One layer per commit (sequencer logic and Plugin trait wiring should not be in the same commit)
-- Tests for a struct ship **in the same commit** as the struct — never ahead, never behind
-- Build/config changes (Cargo.toml, bundler.toml, xtask/) are their own commit
-- `CLAUDE.md` changes are always their own separate commit with scope `[docs]`
+- A sequencer struct, its tests, and any `docs/design.md` updates belong in the same commit.
+- Tests ship **in the same commit** as the code they test — never ahead, never behind.
+- `docs/design.md` updates that reflect the committed code ship **in the same commit**, not
+  in a subsequent `[docs]` commit. The design doc should always match the code at HEAD.
+- Build/config-only changes (Cargo.toml, bundler.toml, xtask/) may be their own commit when
+  they don't accompany a feature.
+- `CLAUDE.md` changes are their own commit (scope `[docs]`) since they reflect process, not code.
 
-**Do not batch.** A commit that says "add euclidean, held notes, and clock" makes the git log
-useless for learning and makes rollback difficult.
+**Don't over-split.** A commit like "add EuclideanPattern with Bjorklund algorithm, tests,
+and design doc updates" is the right size. A commit that touches euclidean, held notes, AND
+clock is too large.
 
 ---
 
@@ -175,12 +178,12 @@ useless for learning and makes rollback difficult.
 Use codetags as inline comments when an implementation is intentionally incomplete, approximate,
 or requires revisiting. Always include a reason.
 
-| Tag | Meaning |
-|---|---|
-| `TODO` | Known missing behavior; should be implemented in a subsequent commit |
-| `FIXME` | Known bug or incorrect behavior being deferred |
-| `HACK` | Working but fragile, non-obvious, or non-idiomatic; should be cleaned up |
-| `NOTE` | Pedagogical explanation for the author; not a defect |
+| Tag      | Meaning                                                                          |
+| -------- | -------------------------------------------------------------------------------- |
+| `TODO`   | Known missing behavior; should be implemented in a subsequent commit             |
+| `FIXME`  | Known bug or incorrect behavior being deferred                                   |
+| `HACK`   | Working but fragile, non-obvious, or non-idiomatic; should be cleaned up         |
+| `NOTE`   | Pedagogical explanation for the author; not a defect                             |
 | `REVIEW` | A design decision that should be revisited once the plugin is testable in Bitwig |
 
 Example contexts for StepOne:
@@ -260,7 +263,7 @@ SineOne development.
 
 **Expression stash pattern (from SineOne):**
 
-- Bitwig's Randomize device may send PolyPressure or PolyPan *before* the corresponding NoteOn
+- Bitwig's Randomize device may send PolyPressure or PolyPan _before_ the corresponding NoteOn
   in the same buffer. Stash these in a fixed-size array indexed by note number. Apply the stashed
   value when the NoteOn arrives, then clear the stash entry. Clear stash entries on NoteOff and
   on reset().
@@ -308,20 +311,11 @@ independent leaf modules with no dependencies on each other — they can be buil
 
 ---
 
-## Post-commit CLAUDE.md review
+## Post-commit check-in
 
-After every commit, before ending the session:
-
-1. Re-read the conversation since the last commit.
-2. Check whether any of the following occurred:
-   - A correction was made to code Claude Code produced
-   - A convention was established that isn't yet in this file
-   - A nih-plug behavior was discovered that differs from what's documented here
-   - A workflow step was added, skipped, or modified by the user
-3. If yes to any of the above: draft a specific proposed change to this file (CLAUDE.md) using a
-   `diff`-style or before/after block. Present it to the user and wait for confirmation before
-   applying. Do not self-apply CLAUDE.md edits.
-4. If no changes are warranted, say so briefly ("No CLAUDE.md updates needed after this commit.")
+After each commit, briefly ask: "Any CLAUDE.md updates needed?" The user will flag
+corrections, new conventions, or nih-plug discoveries worth capturing. Do not attempt
+autonomous self-review — it proved unreliable on sine-one.
 
 ---
 
